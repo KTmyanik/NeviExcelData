@@ -1,0 +1,7 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+liste_cekici.json
+liste_cekici_son.json
+data/

@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Resmi listeleri güncelle</title>
+  <link rel="stylesheet" href="/static/app.css">
+  <link rel="stylesheet" href="/static/listeler.css">
+</head>
+<body>
+  <header class="top">
+    <div>
+      <p class="eyebrow">Kuruluş tipi</p>
+      <h1>Resmi listeleri güncelle</h1>
+    </div>
+    <div>
+      <a class="nav" id="geri" href="/" hidden>Kontrol ekranına dön</a>
+      <p class="lede">Girdi Excel’indeki her satır ayrı bir dosya olur. Satıra eklenen her adres kolonu aynı dosyada birleştirilir.</p>
+    </div>
+  </header>
+
+  <section class="paths">
+    <label class="field">
+      <span>Girdi Excel</span>
+      <input id="girdi" type="text" spellcheck="false" autocomplete="off">
+    </label>
+    <label class="field">
+      <span>Çıktı klasörü</span>
+      <input id="cikti" type="text" spellcheck="false" autocomplete="off">
+    </label>
+    <div class="actions">
+      <button id="kaydet" class="secondary" type="button">Yolları kaydet</button>
+      <button id="onizle" class="secondary" type="button">Excel’i oku</button>
+      <button id="calistir" class="primary" type="button">Çalıştır</button>
+    </div>
+  </section>
+
+  <p class="note">Yeni satır yeni Excel’dir. Yeni kolonun hücresine adres yapıştırmanız yeter; bağlantı olması şart değil. Vakıf, devlet, katılım bankası, sigorta veya emeklilik gibi ayrımlar satırın adından ve yanındaki açıklamadan okunur.</p>
+  <p id="asama"></p>
+  <section class="stats" id="ozet"></section>
+  <section id="icerik"></section>
+
+  <script src="/static/listeler.js"></script>
+</body>
+</html>
