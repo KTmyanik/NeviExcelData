@@ -12,6 +12,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import threading
 from collections import Counter
@@ -213,16 +214,124 @@ def _site(url: str) -> str:
     return match.group(1).lower() if match else ""
 
 
+# Kurum ağı internete proxy'yle çıkıyor; hangi adresin hangi proxy'den gideceğini otomatik yapılandırma
+# (PAC) dosyası belirliyor. Tarayıcı bunu Windows'tan alıyor, curl almıyor ve doğrudan bağlanmaya çalışıp
+# zaman aşımına düşüyordu. Proxy her site için Windows'un kendi PAC yorumlayıcısına (WinHTTP) sorulur;
+# proxy kimlik isterse curl Windows oturumuyla (-U : → SSPI) doğrular.
+_PROXY_ORTAM = ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy")
+_PROXYLER: dict[str, str | None] = {}
+
+
+def _winhttp_proxy(url: str, pac_adresi: str | None = None) -> str | None:
+    """Windows'un bu adres için seçtiği proxy ("10.13.50.100:8080"); doğrudan erişimse None.
+
+    pac_adresi verilmezse kullanıcının Internet ayarlarındaki sabit proxy, PAC adresi ve otomatik algılama kullanılır.
+    """
+    import ctypes
+    from ctypes import wintypes
+
+    # Windows'un ayırdığı metinler ham işaretçi olarak tutulur: okunup GlobalFree ile bırakılmalı.
+    class IeAyari(ctypes.Structure):
+        _fields_ = [("fAutoDetect", wintypes.BOOL), ("lpszAutoConfigUrl", ctypes.c_void_p),
+                    ("lpszProxy", ctypes.c_void_p), ("lpszProxyBypass", ctypes.c_void_p)]
+
+    class OtomatikAyar(ctypes.Structure):
+        _fields_ = [("dwFlags", wintypes.DWORD), ("dwAutoDetectFlags", wintypes.DWORD),
+                    ("lpszAutoConfigUrl", wintypes.LPCWSTR), ("lpvReserved", ctypes.c_void_p),
+                    ("dwReserved", wintypes.DWORD), ("fAutoLogonIfChallenged", wintypes.BOOL)]
+
+    class ProxyBilgisi(ctypes.Structure):
+        _fields_ = [("dwAccessType", wintypes.DWORD), ("lpszProxy", ctypes.c_void_p),
+                    ("lpszProxyBypass", ctypes.c_void_p)]
+
+    winhttp = ctypes.WinDLL("winhttp", use_last_error=True)
+    kernel32 = ctypes.WinDLL("kernel32")
+    kernel32.GlobalFree.argtypes = [ctypes.c_void_p]
+    winhttp.WinHttpOpen.restype = ctypes.c_void_p
+    winhttp.WinHttpOpen.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.DWORD]
+    winhttp.WinHttpGetProxyForUrl.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR,
+                                              ctypes.POINTER(OtomatikAyar), ctypes.POINTER(ProxyBilgisi)]
+    winhttp.WinHttpCloseHandle.argtypes = [ctypes.c_void_p]
+
+    def metin(isaretci) -> str | None:
+        return ctypes.wstring_at(isaretci) if isaretci else None
+
+    def serbest(*isaretciler):
+        for isaretci in isaretciler:
+            if isaretci:
+                kernel32.GlobalFree(isaretci)
+
+    sabit = None
+    otomatik = False
+    if pac_adresi is None:
+        ie = IeAyari()
+        if winhttp.WinHttpGetIEProxyConfigForCurrentUser(ctypes.byref(ie)):
+            pac_adresi = metin(ie.lpszAutoConfigUrl)
+            sabit = metin(ie.lpszProxy)
+            otomatik = bool(ie.fAutoDetect)
+            serbest(ie.lpszAutoConfigUrl, ie.lpszProxy, ie.lpszProxyBypass)
+    if pac_adresi or otomatik:
+        ayar = OtomatikAyar()
+        ayar.dwFlags = (2 if pac_adresi else 0) | (1 if otomatik else 0)  # CONFIG_URL | AUTO_DETECT
+        ayar.dwAutoDetectFlags = 3 if otomatik else 0  # DHCP | DNS_A
+        ayar.lpszAutoConfigUrl = pac_adresi
+        ayar.fAutoLogonIfChallenged = True
+        oturum = winhttp.WinHttpOpen(UA, 1, None, None, 0)  # WINHTTP_ACCESS_TYPE_NO_PROXY
+        if oturum:
+            try:
+                bilgi = ProxyBilgisi()
+                if winhttp.WinHttpGetProxyForUrl(oturum, url, ctypes.byref(ayar), ctypes.byref(bilgi)):
+                    proxy = metin(bilgi.lpszProxy) if bilgi.dwAccessType == 3 else None  # NAMED_PROXY
+                    serbest(bilgi.lpszProxy, bilgi.lpszProxyBypass)
+                    return _proxy_sec(proxy, url)
+            finally:
+                winhttp.WinHttpCloseHandle(oturum)
+    return _proxy_sec(sabit, url)
+
+
+def _proxy_sec(liste: str | None, url: str) -> str | None:
+    """ "a:1;b:2" ya da "http=a:1;https=b:2" biçiminden bu adrese uyan ilk proxy."""
+    if not liste:
+        return None
+    sema = url.split(":", 1)[0].lower()
+    adaylar = [p.strip() for p in re.split(r"[;\s]+", liste) if p.strip()]
+    for aday in adaylar:
+        if "=" in aday:
+            tur, deger = aday.split("=", 1)
+            if tur.lower() == sema:
+                return deger
+    return next((a for a in adaylar if "=" not in a), None)
+
+
+def _proxy_argumanlari(url: str) -> list[str]:
+    if sys.platform != "win32" or any(os.environ.get(ad) for ad in _PROXY_ORTAM):
+        return []  # ortamda proxy tanımlıysa curl onu kendisi kullanır
+    site = _site(url)
+    if not site:
+        return []
+    anahtar = f"{url.split(':', 1)[0].lower()}://{site}"
+    if anahtar not in _PROXYLER:
+        try:
+            _PROXYLER[anahtar] = _winhttp_proxy(f"{anahtar}/")
+        except Exception:
+            _PROXYLER[anahtar] = None  # proxy bulunamazsa doğrudan denenir
+    proxy = _PROXYLER[anahtar]
+    if not proxy:
+        return []
+    return ["-x", proxy if "://" in proxy else f"http://{proxy}", "--proxy-anyauth", "-U", ":"]
+
+
 def _curl(args: list[str], timeout: int, stdin: bytes | None = None) -> tuple[str, bytes]:
     site = _site(args[-1])
     if site in _ULASILAMAYAN:
         raise RuntimeError(f"{site} adresine bu çalıştırmada bağlanılamadı; atlandı.")
+    proxy = _proxy_argumanlari(args[-1])
     last_error = "curl başarısız oldu."
     code = None
     for attempt in range(3):
         try:
             proc = subprocess.run(
-                [_CURL, "-S", "--connect-timeout", str(BAGLANTI_SURESI), *args],
+                [_CURL, "-S", "--connect-timeout", str(BAGLANTI_SURESI), *proxy, *args],
                 input=stdin,
                 capture_output=True,
                 timeout=timeout + 15,
@@ -925,7 +1034,8 @@ def calistir(girdi: str, cikti_klasoru: str, ilerleme=None) -> dict:
         raise ValueError("Girdi dosyası .xlsx olmalı.")
     started = perf_counter()
     plan = plani_oku(source)
-    _ULASILAMAYAN.clear()  # ağ değişmiş olabilir; her çalıştırma siteleri yeniden dener
+    _ULASILAMAYAN.clear()  # ağ değişmiş olabilir; her çalıştırma siteleri ve proxy'yi yeniden dener
+    _PROXYLER.clear()
     results = []
     for index, item in enumerate(plan, 1):
         if ilerleme:
