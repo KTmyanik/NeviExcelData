@@ -200,12 +200,29 @@ def algila(url: str) -> str:
 _CURL = shutil.which("curl.exe") or shutil.which("curl") or "curl.exe"
 
 
+# Kurum ağı bazı siteleri (ör. spk.gov.tr) reddetmek yerine askıda bırakıyor. Bağlantı kurulamazsa
+# 15 sn'de vazgeçilir, zaman aşımı yeniden denenmez ve o site bu çalıştırmada bir daha denenmez;
+# yoksa SPK'ya giden her adres 3 × 70 sn bekletiyordu.
+BAGLANTI_SURESI = 15
+_YENIDEN_DENE = {6, 7, 18, 35, 52, 56}  # geçici DNS / bağlantı / aktarım hatası
+_ULASILAMAYAN: set[str] = set()
+
+
+def _site(url: str) -> str:
+    match = re.match(r"https?://([^/?#]+)", url, flags=re.I)
+    return match.group(1).lower() if match else ""
+
+
 def _curl(args: list[str], timeout: int, stdin: bytes | None = None) -> tuple[str, bytes]:
+    site = _site(args[-1])
+    if site in _ULASILAMAYAN:
+        raise RuntimeError(f"{site} adresine bu çalıştırmada bağlanılamadı; atlandı.")
     last_error = "curl başarısız oldu."
+    code = None
     for attempt in range(3):
         try:
             proc = subprocess.run(
-                [_CURL, *args],
+                [_CURL, "-S", "--connect-timeout", str(BAGLANTI_SURESI), *args],
                 input=stdin,
                 capture_output=True,
                 timeout=timeout + 15,
@@ -215,13 +232,18 @@ def _curl(args: list[str], timeout: int, stdin: bytes | None = None) -> tuple[st
             raise RuntimeError("curl bulunamadı.") from exc
         except subprocess.TimeoutExpired:
             last_error = "İstek zaman aşımına uğradı."
-            continue
+            break
         if proc.returncode == 0:
             return proc.stdout.decode("utf-8", errors="replace"), proc.stderr
+        code = proc.returncode
         detail = proc.stderr.decode("utf-8", errors="replace").strip()
-        last_error = detail[:300] or f"curl çıkış kodu {proc.returncode}"
-        if proc.returncode not in {6, 7, 18, 28, 35, 52, 56}:  # 6/7: geçici DNS / bağlantı hatası
+        last_error = detail[:300] or f"curl çıkış kodu {code}"
+        if code not in _YENIDEN_DENE:
             break
+    baglanti_yok = code in {6, 7} or (code == 28 and "connect" in last_error.lower())
+    if site and baglanti_yok:
+        _ULASILAMAYAN.add(site)
+        last_error = f"{site} adresine bağlanılamadı (ağ veya güvenlik filtresi engelliyor olabilir). {last_error}"
     raise RuntimeError(last_error)
 
 
@@ -903,6 +925,7 @@ def calistir(girdi: str, cikti_klasoru: str, ilerleme=None) -> dict:
         raise ValueError("Girdi dosyası .xlsx olmalı.")
     started = perf_counter()
     plan = plani_oku(source)
+    _ULASILAMAYAN.clear()  # ağ değişmiş olabilir; her çalıştırma siteleri yeniden dener
     results = []
     for index, item in enumerate(plan, 1):
         if ilerleme:
