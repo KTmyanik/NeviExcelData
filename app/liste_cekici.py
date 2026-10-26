@@ -199,6 +199,9 @@ def algila(url: str) -> str:
 
 
 _CURL = shutil.which("curl.exe") or shutil.which("curl") or "curl.exe"
+# Kurum ağı sertifika iptal (CRL/OCSP) sunucularını kapatabiliyor; Windows curl'ü (Schannel) o zaman
+# bağlantıyı keser. İptal denetimi yapılabiliyorsa yine yapılır, sunucuya ulaşılamıyorsa atlanır.
+_TLS = ["--ssl-revoke-best-effort"] if sys.platform == "win32" else []
 
 
 # Kurum ağı bazı siteleri (ör. spk.gov.tr) reddetmek yerine askıda bırakıyor. Bağlantı kurulamazsa
@@ -331,7 +334,7 @@ def _curl(args: list[str], timeout: int, stdin: bytes | None = None) -> tuple[st
     for attempt in range(3):
         try:
             proc = subprocess.run(
-                [_CURL, "-S", "--connect-timeout", str(BAGLANTI_SURESI), *proxy, *args],
+                [_CURL, "-S", "--connect-timeout", str(BAGLANTI_SURESI), *_TLS, *proxy, *args],
                 input=stdin,
                 capture_output=True,
                 timeout=timeout + 15,
