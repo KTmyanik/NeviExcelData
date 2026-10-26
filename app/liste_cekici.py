@@ -666,12 +666,16 @@ def _table_records(html: str) -> list[dict]:
     return records
 
 
+# YetkiBelgesi servisi ilk baytı ~35 sn'de gönderiyor; kurum proxy'si bunu uzatıyor.
+SPK_SURESI = 180
+
+
 def _fetch_spk(url: str, _ctx: dict) -> tuple[list[dict], list[str]]:
     html = http_text(url)
     warnings = []
     for endpoint in _spk_endpoints(html):
         try:
-            records = _json_records(http_json(endpoint))
+            records = _json_records(http_json(endpoint, timeout=SPK_SURESI))
         except Exception as exc:
             warnings.append(f"{endpoint}: {exc}")
             continue
